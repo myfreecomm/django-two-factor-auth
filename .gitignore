@@ -5,3 +5,8 @@ example/settings_private.py
 /.tox/
 /htmlcov/
 /docs/_build/
+
+/bin/
+/include/
+/lib/
+/local/
