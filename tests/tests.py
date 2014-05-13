@@ -1,31 +1,55 @@
 from binascii import unhexlify
-import qrcode.image.svg
+import os
+
+try:
+    # Try StringIO first, as Python 2.7 also includes an unicode-strict
+    # io.StringIO.
+    from StringIO import StringIO
+except ImportError:
+    from io import StringIO
 
 try:
     from urllib.parse import urlencode
 except ImportError:
     from urllib import urlencode
+
+try:
+    import unittest2 as unittest
+except ImportError:
+    import unittest
+
 try:
     from unittest.mock import patch, Mock, ANY, call
 except ImportError:
     from mock import patch, Mock, ANY, call
 
+import django
 from django import forms
 from django.conf import settings
+from django.core.exceptions import ImproperlyConfigured
+from django.core.management import call_command, CommandError
+from django.core.urlresolvers import reverse
+from django.test import TestCase
+from django.test.utils import override_settings
+from django.utils import translation, six
+
 try:
     from django.contrib.auth import get_user_model
 except ImportError:
     from django.contrib.auth.models import User
 else:
     User = get_user_model()
-from django.core.exceptions import ImproperlyConfigured
-from django.core.urlresolvers import reverse
-from django.test import TestCase
-from django.test.utils import override_settings
-from django.utils import translation, six
+
 from django_otp import DEVICE_ID_SESSION_KEY, devices_for_user
 from django_otp.oath import totp
 from django_otp.util import random_hex
+
+try:
+    from otp_yubikey.models import ValidationService, RemoteYubikeyDevice
+except ImportError:
+    ValidationService = RemoteYubikeyDevice = None
+
+import qrcode.image.svg
 
 from two_factor.admin import patch_admin, unpatch_admin
 from two_factor.gateways.fake import Fake
@@ -244,7 +268,7 @@ class SetupTest(UserMixin, TestCase):
             data={'setup_view-current_step': 'generator',
                   'generator-token': '123456'})
         self.assertEqual(response.context_data['wizard']['form'].errors,
-                         {'token': ['Please enter a valid token.']})
+                         {'token': ['Entered token is not valid.']})
 
         key = response.context_data['keys'].get('generator')
         bin_key = unhexlify(key.encode())
@@ -259,8 +283,13 @@ class SetupTest(UserMixin, TestCase):
         return self.client.post(reverse('two_factor:setup'), data=data)
 
     def test_no_phone(self):
-        response = self._post(data={'setup_view-current_step': 'welcome'})
-        self.assertNotContains(response, 'call')
+        with self.settings(TWO_FACTOR_CALL_GATEWAY=None):
+            response = self._post(data={'setup_view-current_step': 'welcome'})
+            self.assertNotContains(response, 'call')
+
+        with self.settings(TWO_FACTOR_CALL_GATEWAY='two_factor.gateways.fake.Fake'):
+            response = self._post(data={'setup_view-current_step': 'welcome'})
+            self.assertContains(response, 'call')
 
     @patch('two_factor.gateways.fake.Fake')
     @override_settings(TWO_FACTOR_CALL_GATEWAY='two_factor.gateways.fake.Fake')
@@ -285,7 +314,7 @@ class SetupTest(UserMixin, TestCase):
         response = self._post(data={'setup_view-current_step': 'validation',
                                     'validation-token': '666'})
         self.assertEqual(response.context_data['wizard']['form'].errors,
-                         {'token': ['Entered token is not valid']})
+                         {'token': ['Entered token is not valid.']})
 
         # submitting correct token should finish the setup
         token = fake.return_value.make_call.call_args[1]['token']
@@ -322,7 +351,7 @@ class SetupTest(UserMixin, TestCase):
         response = self._post(data={'setup_view-current_step': 'validation',
                                     'validation-token': '666'})
         self.assertEqual(response.context_data['wizard']['form'].errors,
-                         {'token': ['Entered token is not valid']})
+                         {'token': ['Entered token is not valid.']})
 
         # submitting correct token should finish the setup
         token = fake.return_value.send_sms.call_args[1]['token']
@@ -337,9 +366,37 @@ class SetupTest(UserMixin, TestCase):
         self.assertEqual(phones[0].method, 'sms')
 
     def test_already_setup(self):
-        self.user.totpdevice_set.create(name='default')
+        self.enable_otp()
+        self.login_user()
         response = self.client.get(reverse('two_factor:setup'))
         self.assertRedirects(response, reverse('two_factor:setup_complete'))
+
+    def test_no_double_login(self):
+        """
+        Activating two-factor authentication for ones account, should
+        automatically mark the session as being OTP verified. Refs #44.
+        """
+        self.test_setup_generator()
+        device = self.user.totpdevice_set.all()[0]
+
+        self.assertEqual(device.persistent_id,
+                         self.client.session.get(DEVICE_ID_SESSION_KEY))
+
+    def test_suggest_backup_number(self):
+        """
+        Finishing the setup wizard should suggest to add a phone number, if
+        a phone method is available. Refs #49.
+        """
+        self.enable_otp()
+        self.login_user()
+
+        with self.settings(TWO_FACTOR_SMS_GATEWAY=None):
+            response = self.client.get(reverse('two_factor:setup_complete'))
+            self.assertNotContains(response, 'Add Phone Number')
+
+        with self.settings(TWO_FACTOR_SMS_GATEWAY='two_factor.gateways.fake.Fake'):
+            response = self.client.get(reverse('two_factor:setup_complete'))
+            self.assertContains(response, 'Add Phone Number')
 
 
 class OTPRequiredMixinTest(UserMixin, TestCase):
@@ -504,7 +561,7 @@ class PhoneSetupTest(UserMixin, TestCase):
         response = self._post({'phone_setup_view-current_step': 'validation',
                                'validation-token': '123456'})
         self.assertEqual(response.context_data['wizard']['form'].errors,
-                         {'token': ['Entered token is not valid']})
+                         {'token': ['Entered token is not valid.']})
 
         response = self._post({'phone_setup_view-current_step': 'validation',
                                'validation-token': totp(device.bin_key)})
@@ -759,3 +816,158 @@ class ValidatorsTest(TestCase):
         self.assertIn('number', form.errors)
         self.assertEqual(form.errors['number'],
                          [six.text_type(phone_number_validator.message)])
+
+
+class DisableCommandTest(UserMixin, TestCase):
+    def _assert_raises(self, err_type, err_message):
+        if django.VERSION >= (1, 5):
+            return self.assertRaisesMessage(err_type, err_message)
+        else:
+            return self.assertRaises(SystemExit)
+
+    def test_raises(self):
+        with self._assert_raises(CommandError, 'User "some_username" does not exist'):
+            call_command('disable', 'some_username')
+
+        with self._assert_raises(CommandError, 'User "other_username" does not exist'):
+            call_command('disable', 'other_username', 'some_username')
+
+    def test_disable_single(self):
+        user = self.create_user()
+        self.enable_otp(user)
+        call_command('disable', 'bouke@example.com')
+        self.assertEqual(list(devices_for_user(user)), [])
+
+    def test_happy_flow_multiple(self):
+        usernames = ['user%d@example.com' % i for i in range(0, 3)]
+        users = [self.create_user(username) for username in usernames]
+        [self.enable_otp(user) for user in users]
+        call_command('disable', *usernames[:2])
+        self.assertEqual(list(devices_for_user(users[0])), [])
+        self.assertEqual(list(devices_for_user(users[1])), [])
+        self.assertNotEqual(list(devices_for_user(users[2])), [])
+
+
+class StatusCommandTest(UserMixin, TestCase):
+    def _assert_raises(self, err_type, err_message):
+        if django.VERSION >= (1, 5):
+            return self.assertRaisesMessage(err_type, err_message)
+        else:
+            return self.assertRaises(SystemExit)
+
+    def setUp(self):
+        super(StatusCommandTest, self).setUp()
+        os.environ['DJANGO_COLORS'] = 'nocolor'
+
+    def test_raises(self):
+        with self._assert_raises(CommandError, 'User "some_username" does not exist'):
+            call_command('status', 'some_username')
+
+        with self._assert_raises(CommandError, 'User "other_username" does not exist'):
+            call_command('status', 'other_username', 'some_username')
+
+    def test_status_single(self):
+        user = self.create_user()
+        stdout = StringIO()
+        call_command('status', 'bouke@example.com', stdout=stdout)
+        self.assertEqual(stdout.getvalue(), 'bouke@example.com: disabled\n')
+
+        stdout = StringIO()
+        self.enable_otp(user)
+        call_command('status', 'bouke@example.com', stdout=stdout)
+        self.assertEqual(stdout.getvalue(), 'bouke@example.com: enabled\n')
+
+    def test_status_mutiple(self):
+        users = [self.create_user(n) for n in ['user0@example.com', 'user1@example.com']]
+        self.enable_otp(users[0])
+        stdout = StringIO()
+        call_command('status', 'user0@example.com', 'user1@example.com', stdout=stdout)
+        self.assertEqual(stdout.getvalue(), 'user0@example.com: enabled\n'
+                                            'user1@example.com: disabled\n')
+
+
+@unittest.skipUnless(ValidationService, 'No YubiKey support')
+class YubiKeyTest(UserMixin, TestCase):
+    @patch('otp_yubikey.models.RemoteYubikeyDevice.verify_token')
+    def test_setup(self, verify_token):
+        user = self.create_user()
+        self.login_user()
+        verify_token.return_value = [True, False]  # only first try is valid
+
+        # Should be able to select YubiKey method
+        response = self.client.post(reverse('two_factor:setup'),
+                                    data={'setup_view-current_step': 'welcome'})
+        self.assertContains(response, 'YubiKey')
+
+        # Without ValidationService it won't work
+        with self.assertRaisesMessage(KeyError, "No ValidationService found with name 'default'"):
+                self.client.post(reverse('two_factor:setup'),
+                                 data={'setup_view-current_step': 'method',
+                                       'method-method': 'yubikey'})
+
+        # With a ValidationService, should be able to input a YubiKey
+        ValidationService.objects.create(name='default', param_sl='', param_timeout='')
+
+        response = self.client.post(reverse('two_factor:setup'),
+                                    data={'setup_view-current_step': 'method',
+                                          'method-method': 'yubikey'})
+        self.assertContains(response, 'YubiKey:')
+
+        # Should call verify_token and create the device on finish
+        token = 'jlvurcgekuiccfcvgdjffjldedjjgugk'
+        response = self.client.post(reverse('two_factor:setup'),
+                                    data={'setup_view-current_step': 'yubikey',
+                                          'yubikey-token': token})
+        self.assertRedirects(response, reverse('two_factor:setup_complete'))
+        verify_token.assert_called_with(token)
+
+        yubikeys = user.remoteyubikeydevice_set.all()
+        self.assertEqual(len(yubikeys), 1)
+        self.assertEqual(yubikeys[0].name, 'default')
+
+    @patch('otp_yubikey.models.RemoteYubikeyDevice.verify_token')
+    def test_login(self, verify_token):
+        user = self.create_user()
+        verify_token.return_value = [True, False]  # only first try is valid
+        service = ValidationService.objects.create(name='default', param_sl='', param_timeout='')
+        user.remoteyubikeydevice_set.create(service=service, name='default')
+
+        # Input type should be text, not numbers like other tokens
+        response = self.client.post(reverse('two_factor:login'),
+                                    data={'auth-username': 'bouke@example.com',
+                                          'auth-password': 'secret',
+                                          'login_view-current_step': 'auth'})
+        self.assertContains(response, 'YubiKey:')
+        self.assertIsInstance(response.context_data['wizard']['form'].fields['otp_token'],
+                              forms.CharField)
+
+        # Should call verify_token
+        token = 'cjikftknbiktlitnbltbitdncgvrbgic'
+        response = self.client.post(reverse('two_factor:login'),
+                                    data={'token-otp_token': token,
+                                          'login_view-current_step': 'token'})
+        self.assertRedirects(response, str(settings.LOGIN_REDIRECT_URL))
+        verify_token.assert_called_with(token)
+
+    def test_show_correct_label(self):
+        """
+        The token form replaces the input field when the user's device is a
+        YubiKey. However when the user decides to enter a backup token, the
+        normal backup token form should be shown. Refs #50.
+        """
+        user = self.create_user()
+        service = ValidationService.objects.create(name='default', param_sl='', param_timeout='')
+        user.remoteyubikeydevice_set.create(service=service, name='default')
+        backup = user.staticdevice_set.create(name='backup')
+        backup.token_set.create(token='RANDOM')
+
+        response = self.client.post(reverse('two_factor:login'),
+                                    data={'auth-username': 'bouke@example.com',
+                                          'auth-password': 'secret',
+                                          'login_view-current_step': 'auth'})
+        self.assertContains(response, 'YubiKey:')
+
+        response = self.client.post(reverse('two_factor:login'),
+                                    data={'wizard_goto_step': 'backup'})
+        self.assertNotContains(response, 'YubiKey:')
+        self.assertContains(response, 'Token:')

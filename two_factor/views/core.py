@@ -1,7 +1,5 @@
 from binascii import unhexlify
 from base64 import b32encode
-import qrcode
-import qrcode.image.svg
 
 from django.conf import settings
 from django.contrib.auth import login as login, REDIRECT_FIELD_NAME
@@ -15,15 +13,25 @@ from django.shortcuts import redirect
 from django.views.decorators.cache import never_cache
 from django.views.generic import FormView, DeleteView, TemplateView
 from django.views.generic.base import View
+
+import django_otp
 from django_otp.decorators import otp_required
-from django_otp.plugins.otp_static.models import StaticToken
+from django_otp.plugins.otp_static.models import StaticToken, StaticDevice
 from django_otp.util import random_hex
+
+try:
+    from otp_yubikey.models import ValidationService, RemoteYubikeyDevice
+except ImportError:
+    ValidationService = RemoteYubikeyDevice = None
+
+import qrcode
+import qrcode.image.svg
 
 from ..compat import is_safe_url, import_by_path
 from ..forms import (MethodForm, TOTPDeviceForm, PhoneNumberMethodForm,
                      DeviceValidationForm, AuthenticationTokenForm,
-                     PhoneNumberForm, BackupTokenForm)
-from ..models import PhoneDevice
+                     PhoneNumberForm, BackupTokenForm, YubiKeyDeviceForm)
+from ..models import PhoneDevice, get_available_phone_methods
 from ..utils import (get_otpauth_url, default_device,
                      backup_phones)
 from .utils import (IdempotentSessionWizardView, class_view_decorator)
@@ -97,10 +105,11 @@ class LoginView(IdempotentSessionWizardView):
         if step in ('token', 'backup'):
             return {
                 'user': self.get_user(),
+                'initial_device': self.get_device(step),
             }
         return {}
 
-    def get_device(self):
+    def get_device(self, step=None):
         """
         Returns the OTP device selected by the user, or his default device.
         """
@@ -111,6 +120,11 @@ class LoginView(IdempotentSessionWizardView):
                     if device.persistent_id == challenge_device_id:
                         self.device_cache = device
                         break
+            if step == 'backup':
+                try:
+                    self.device_cache = self.get_user().staticdevice_set.get(name='backup')
+                except StaticDevice.DoesNotExist:
+                    pass
             if not self.device_cache:
                 self.device_cache = default_device(self.get_user())
         return self.device_cache
@@ -146,8 +160,8 @@ class LoginView(IdempotentSessionWizardView):
                 if phone != self.get_device()]
             try:
                 context['backup_tokens'] = self.get_user().staticdevice_set\
-                    .all()[0].token_set.count()
-            except:
+                    .get(name='backup').token_set.count()
+            except StaticDevice.DoesNotExist:
                 context['backup_tokens'] = 0
 
         context['cancel_url'] = settings.LOGOUT_URL
@@ -180,12 +194,17 @@ class SetupView(IdempotentSessionWizardView):
         ('sms', PhoneNumberForm),
         ('call', PhoneNumberForm),
         ('validation', DeviceValidationForm),
+        ('yubikey', YubiKeyDeviceForm),
     )
     condition_dict = {
         'generator': lambda self: self.get_method() == 'generator',
         'call': lambda self: self.get_method() == 'call',
         'sms': lambda self: self.get_method() == 'sms',
         'validation': lambda self: self.get_method() in ('sms', 'call'),
+        'yubikey': lambda self: self.get_method() == 'yubikey',
+    }
+    idempotent_dict = {
+        'yubikey': False,
     }
 
     def get_method(self):
@@ -215,14 +234,18 @@ class SetupView(IdempotentSessionWizardView):
         """
         # TOTPDeviceForm
         if self.get_method() == 'generator':
-            for form in form_list:
-                if callable(getattr(form, 'save', None)):
-                    form.save()
+            form = [form for form in form_list if isinstance(form, TOTPDeviceForm)][0]
+            device = form.save()
 
-        # PhoneNumberForm
-        if self.get_method() in ('call', 'sms'):
-            self.get_device(user=self.request.user, name='default').save()
+        # PhoneNumberForm / YubiKeyDeviceForm
+        elif self.get_method() in ('call', 'sms', 'yubikey'):
+            device = self.get_device()
+            device.save()
 
+        else:
+            raise NotImplementedError("Unknown method '%s'" % self.get_method())
+
+        django_otp.login(self.request, device)
         return redirect(self.redirect_url)
 
     def get_form_kwargs(self, step=None):
@@ -232,7 +255,7 @@ class SetupView(IdempotentSessionWizardView):
                 'key': self.get_key(step),
                 'user': self.request.user,
             })
-        if step == 'validation':
+        if step in ('validation', 'yubikey'):
             kwargs.update({
                 'device': self.get_device()
             })
@@ -251,10 +274,25 @@ class SetupView(IdempotentSessionWizardView):
         """
         method = self.get_method()
         kwargs = kwargs or {}
-        kwargs['method'] = method
-        kwargs['number'] = self.storage.validated_step_data\
-            .get(method, {}).get('number')
-        return PhoneDevice(key=self.get_key(method), **kwargs)
+        kwargs['name'] = 'default'
+        kwargs['user'] = self.request.user
+
+        if method in ('call', 'sms'):
+            kwargs['method'] = method
+            kwargs['number'] = self.storage.validated_step_data\
+                .get(method, {}).get('number')
+            return PhoneDevice(key=self.get_key(method), **kwargs)
+
+        if method == 'yubikey':
+            kwargs['public_id'] = self.storage.validated_step_data\
+                .get('yubikey', {}).get('token', '')[:-32]
+            try:
+                kwargs['service'] = ValidationService.objects.get(name='default')
+            except ValidationService.DoesNotExist:
+                raise KeyError("No ValidationService found with name 'default'")
+            except ValidationService.MultipleObjectsReturned:
+                raise KeyError("Multiple ValidationService found with name 'default'")
+            return RemoteYubikeyDevice(**kwargs)
 
     def get_key(self, step):
         self.storage.extra_data.setdefault('keys', {})
@@ -405,12 +443,17 @@ class PhoneDeleteView(DeleteView):
 
 
 @class_view_decorator(never_cache)
-@class_view_decorator(login_required)
+@class_view_decorator(otp_required)
 class SetupCompleteView(TemplateView):
     """
     View congratulation the user when OTP setup has completed.
     """
     template_name = 'two_factor/core/setup_complete.html'
+
+    def get_context_data(self):
+        return {
+            'phone_methods': get_available_phone_methods(),
+        }
 
 
 @class_view_decorator(never_cache)
