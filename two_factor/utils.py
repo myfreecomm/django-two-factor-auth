@@ -2,6 +2,8 @@ from two_factor.models import PhoneDevice
 
 from django_otp import devices_for_user
 
+__all__ = ['default_device', 'backup_phones', 'get_otpauth_url', 'monkeypatch_method']
+
 
 def default_device(user):
     if not user or user.is_anonymous():
