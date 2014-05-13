@@ -245,7 +245,7 @@ class SetupView(IdempotentSessionWizardView):
         else:
             raise NotImplementedError("Unknown method '%s'" % self.get_method())
 
-        django_otp.login(self.request, device)
+        django_otp.handlers.login(self.request, device)
         return redirect(self.redirect_url)
 
     def get_form_kwargs(self, step=None):
