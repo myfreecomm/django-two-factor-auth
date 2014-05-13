@@ -2,7 +2,7 @@ from binascii import unhexlify
 from time import time
 
 from django import forms
-from django.forms import ModelForm, Form
+from django.forms import Form
 from django.utils.translation import ugettext_lazy as _
 
 from django_otp.forms import OTPAuthenticationFormMixin
@@ -13,8 +13,10 @@ try:
 except ImportError:
     RemoteYubikeyDevice = YubikeyDevice = None
 
-from .models import (PhoneDevice, get_available_phone_methods,
-                     get_available_methods)
+from .models import (
+    PhoneDevice, get_available_phone_methods,
+    get_available_methods, phone_number_validator
+)
 
 
 class MethodForm(forms.Form):
@@ -27,22 +29,23 @@ class MethodForm(forms.Form):
         self.fields['method'].choices = get_available_methods()
 
 
-class PhoneNumberMethodForm(ModelForm):
-    method = forms.ChoiceField(widget=forms.RadioSelect, label=_('Method'))
+class PhoneNumberForm(forms.Form):
+    number = forms.CharField(max_length=16, validators=[phone_number_validator], label=_('Number'))
 
-    class Meta:
-        model = PhoneDevice
-        fields = 'number', 'method',
+    def save(self, commit=True):
+        instance = PhoneDevice(**self.cleaned_data)
+        if commit:
+            instance.save()
+
+        return instance
+
+
+class PhoneNumberMethodForm(PhoneNumberForm):
+    method = forms.ChoiceField(widget=forms.RadioSelect, label=_('Method'))
 
     def __init__(self, **kwargs):
         super(PhoneNumberMethodForm, self).__init__(**kwargs)
         self.fields['method'].choices = get_available_phone_methods()
-
-
-class PhoneNumberForm(ModelForm):
-    class Meta:
-        model = PhoneDevice
-        fields = 'number',
 
 
 class DeviceValidationForm(forms.Form):

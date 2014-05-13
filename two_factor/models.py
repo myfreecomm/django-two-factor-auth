@@ -16,6 +16,7 @@ try:
 except ImportError:
     yubiotp = None
 
+
 def get_available_phone_methods():
     methods = []
     if getattr(settings, 'TWO_FACTOR_CALL_GATEWAY', None):

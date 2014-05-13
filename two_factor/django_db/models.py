@@ -1,8 +1,6 @@
 # -*- coding: utf-8 -*-
 from binascii import unhexlify
-import logging
 
-from django.conf import settings
 from django.core.validators import RegexValidator
 from django.db import models
 from django.utils.translation import ugettext_lazy as _
@@ -26,6 +24,7 @@ PHONE_METHODS = (
     ('call', _('Phone Call')),
     ('sms', _('Text Message')),
 )
+
 
 class PhoneDevice(Device):
     """

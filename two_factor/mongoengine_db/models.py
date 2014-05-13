@@ -4,7 +4,7 @@ from binascii import unhexlify
 from django.core.validators import RegexValidator
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.utils.translation import ugettext_lazy as _
-from mongoengine import *
+from mongoengine import StringField, ValidationError
 
 from django_otp import Device
 from django_otp.oath import totp
@@ -26,12 +26,15 @@ PHONE_METHODS = (
     ('sms', _('Text Message')),
 )
 
+
 class PhoneDevice(Device):
     """
     Model with phone number and token seed linked to a user.
     """
-    number = StringField(max_length=16, verbose_name=_('number'))
-    key = StringField(max_length=40, default=lambda: random_hex(20), help_text="Hex-encoded secret key")
+    number = StringField(max_length=16, default='', verbose_name=_('number'))
+    key = StringField(
+        max_length=40, default=lambda: random_hex(20), help_text="Hex-encoded secret key"
+    )
     method = StringField(max_length=4, choices=PHONE_METHODS, verbose_name=_('method'))
 
     meta = {
@@ -73,7 +76,8 @@ class PhoneDevice(Device):
 
     def clean(self):
         try:
-            phone_number_validator(self.number)
             hex_validator()(self.key)
+            if self.number:
+                phone_number_validator(self.number)
         except DjangoValidationError as e:
             raise ValidationError(e)
