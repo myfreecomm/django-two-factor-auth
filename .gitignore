@@ -1,6 +1,7 @@
 *.py[co]
 example/settings_private.py
 *.egg-info
+*.egg
 /.coverage.*
 /.coverage
 /.tox/
@@ -11,3 +12,5 @@ example/settings_private.py
 /include/
 /lib/
 /local/
+
+*.sw[po]
