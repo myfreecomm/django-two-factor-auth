@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 
-from settings import *  # NOQA
+from .settings import *  # NOQA
 
 PERSISTENCE_STRATEGY = 'mongoengine_db'
 

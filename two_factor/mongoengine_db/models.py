@@ -5,7 +5,6 @@ from django.core.validators import RegexValidator
 from django.core.exceptions import ValidationError as DjangoValidationError, ObjectDoesNotExist
 from django.utils.translation import ugettext_lazy as _
 from mongoengine import StringField, ValidationError, DoesNotExist
-from bson.objectid import ObjectId
 
 from django_otp.mongoengine_db.models import DeviceManager, Device
 from django_otp.oath import totp
