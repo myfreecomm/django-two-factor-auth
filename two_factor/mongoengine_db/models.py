@@ -2,11 +2,12 @@
 from binascii import unhexlify
 
 from django.core.validators import RegexValidator
-from django.core.exceptions import ValidationError as DjangoValidationError
+from django.core.exceptions import ValidationError as DjangoValidationError, ObjectDoesNotExist
 from django.utils.translation import ugettext_lazy as _
-from mongoengine import StringField, ValidationError
+from mongoengine import StringField, ValidationError, DoesNotExist
+from bson.objectid import ObjectId
 
-from django_otp import Device
+from django_otp.mongoengine_db.models import DeviceManager, Device
 from django_otp.oath import totp
 from django_otp.util import hex_validator, random_hex
 
@@ -27,6 +28,23 @@ PHONE_METHODS = (
 )
 
 
+class AttrDict(dict):
+    def __init__(self, *args, **kwargs):
+        super(AttrDict, self).__init__(*args, **kwargs)
+        self.__dict__ = self
+
+
+class PhoneDeviceManager(DeviceManager):
+
+    model = AttrDict(_meta=AttrDict(verbose_name='phone devices'))
+
+    def get(self, *args, **kwargs):
+        try:
+            return super(PhoneDeviceManager, self).get(*args, **kwargs)
+        except DoesNotExist as e:
+            raise ObjectDoesNotExist(e)
+
+
 class PhoneDevice(Device):
     """
     Model with phone number and token seed linked to a user.
@@ -39,6 +57,7 @@ class PhoneDevice(Device):
 
     meta = {
         'abstract': False,
+        'queryset_class': PhoneDeviceManager,
     }
 
     def __repr__(self):
