@@ -4,6 +4,7 @@ from django.shortcuts import redirect
 from django.views.decorators.cache import never_cache
 from django.views.generic import TemplateView, FormView
 from django_otp import user_has_device, devices_for_user
+from django_otp.plugins.otp_static.models import StaticDevice
 
 from ..models import get_available_phone_methods
 from ..forms import DisableForm
@@ -25,7 +26,9 @@ class ProfileView(TemplateView):
 
     def get_context_data(self, **kwargs):
         try:
-            backup_tokens = self.request.user.staticdevice_set.all()[0].token_set.count()
+            backup_tokens = StaticDevice.objects.get(
+                user=self.request.user
+            ).token_set.count()
         except Exception:
             backup_tokens = 0
 
