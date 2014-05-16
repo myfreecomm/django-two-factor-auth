@@ -5,6 +5,7 @@ from django.views.decorators.cache import never_cache
 from django.views.generic import TemplateView, FormView
 from django_otp import user_has_device, devices_for_user
 
+from ..models import get_available_phone_methods
 from ..forms import DisableForm
 from ..utils import default_device, backup_phones
 from .utils import class_view_decorator
@@ -33,6 +34,7 @@ class ProfileView(TemplateView):
             'default_device_type': default_device(self.request.user).__class__.__name__,
             'backup_phones': backup_phones(self.request.user),
             'backup_tokens': backup_tokens,
+            'available_phone_methods': get_available_phone_methods,
         }
 
 
