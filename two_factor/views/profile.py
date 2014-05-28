@@ -5,6 +5,7 @@ from django.views.decorators.cache import never_cache
 from django.views.generic import TemplateView, FormView
 from django_otp import user_has_device, devices_for_user
 from django_otp.plugins.otp_static.models import StaticDevice
+from django_otp.decorators import otp_required
 
 from ..models import get_available_phone_methods
 from ..forms import DisableForm
@@ -42,7 +43,7 @@ class ProfileView(TemplateView):
 
 
 @class_view_decorator(never_cache)
-@class_view_decorator(login_required)
+@class_view_decorator(otp_required)
 class DisableView(FormView):
     """
     View for disabling two-factor for a user's account.

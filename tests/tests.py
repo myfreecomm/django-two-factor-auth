@@ -684,8 +684,23 @@ class DisableTest(UserMixin, PERSISTENCE_MODULE.TestCase):
         self.assertEqual(list(devices_for_user(self.user)), [])
 
         # cannot disable twice
-        response = self.client.get(reverse('two_factor:disable'))
-        self.assertRedirects(response, str(settings.LOGIN_REDIRECT_URL))
+        url = reverse('two_factor:disable')
+        response = self.client.get(url)
+        redirect_to = '%s?next=%s' % (settings.LOGIN_URL, url)
+        self.assertRedirects(response, redirect_to)
+
+    def test_unverified_need_login(self):
+        second_user = self.create_user(username='second@example.test')
+        self.login_user(user=second_user)
+
+        # OTP was enabled after login, so the user is not verified
+        self.enable_otp(user=second_user)
+
+        url = reverse('two_factor:disable')
+        redirect_to = '%s?next=%s' % (settings.LOGIN_URL, url)
+
+        response = self.client.get(url)
+        self.assertRedirects(response, redirect_to)
 
 
 class TwilioGatewayTest(PERSISTENCE_MODULE.TestCase):
