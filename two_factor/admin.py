@@ -76,4 +76,5 @@ if getattr(settings, 'TWO_FACTOR_PATCH_ADMIN', True):
     patch_admin()
 
 
-admin.site.register(PhoneDevice)
+if getattr(settings, 'PERSISTENCE_STRATEGY', 'django_db') == 'django_db':
+    admin.site.register(PhoneDevice)

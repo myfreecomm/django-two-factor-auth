@@ -38,7 +38,7 @@ core = patterns(
         name='phone_create',
     ),
     url(
-        regex=r'^account/two_factor/backup/phone/unregister/(?P<pk>\d+)/$',
+        regex=r'^account/two_factor/backup/phone/unregister/(?P<pk>\w+)/$',
         view=PhoneDeleteView.as_view(),
         name='phone_delete',
     ),

@@ -29,7 +29,6 @@ from django import forms
 from django.conf import settings
 from django.core.management import call_command, CommandError
 from django.core.urlresolvers import reverse
-from django.test import TestCase
 from django.test.utils import override_settings
 from django.utils import translation, six
 
@@ -43,6 +42,8 @@ else:
 from django_otp import DEVICE_ID_SESSION_KEY, devices_for_user
 from django_otp.oath import totp
 from django_otp.util import random_hex
+from django_otp.plugins.otp_totp.models import TOTPDevice
+from django_otp.plugins.otp_static.models import StaticDevice
 
 try:
     from otp_yubikey.models import ValidationService, RemoteYubikeyDevice
@@ -56,6 +57,8 @@ from two_factor.gateways.fake import Fake
 from two_factor.gateways.twilio.gateway import Twilio
 from two_factor.models import PhoneDevice, phone_number_validator
 from two_factor.utils import backup_phones, default_device, get_otpauth_url
+
+from two_factor import PERSISTENCE_MODULE
 
 
 class UserMixin(object):
@@ -94,10 +97,10 @@ class UserMixin(object):
     def enable_otp(self, user=None):
         if not user:
             user = list(self._passwords.keys())[0]
-        return user.totpdevice_set.create(name='default')
+        return TOTPDevice.objects.create(user=user, name='default')
 
 
-class LoginTest(UserMixin, TestCase):
+class LoginTest(UserMixin, PERSISTENCE_MODULE.TestCase):
     def _post(self, data=None):
         return self.client.post(reverse('two_factor:login'), data=data)
 
@@ -148,8 +151,9 @@ class LoginTest(UserMixin, TestCase):
     @patch('two_factor.views.core.signals.user_verified.send')
     def test_with_generator(self, mock_signal):
         user = self.create_user()
-        device = user.totpdevice_set.create(name='default',
-                                            key=random_hex().decode())
+        device = TOTPDevice.objects.create(
+            user=user, name='default', key=random_hex().decode()
+        )
 
         response = self._post({'auth-username': 'bouke@example.com',
                                'auth-password': 'secret',
@@ -179,22 +183,23 @@ class LoginTest(UserMixin, TestCase):
     )
     def test_with_backup_phone(self, mock_signal, fake):
         user = self.create_user()
-        user.totpdevice_set.create(name='default', key=random_hex().decode())
-        device = user.phonedevice_set.create(name='backup', number='123456789',
-                                             method='sms',
-                                             key=random_hex().decode())
+        TOTPDevice.objects.create(user=user, name='default', key=random_hex().decode())
+        device = PhoneDevice.objects.create(
+            user=user, name='backup', number='00123456789',
+            method='sms', key=random_hex().decode()
+        )
 
         # Backup phones should be listed on the login form
         response = self._post({'auth-username': 'bouke@example.com',
                                'auth-password': 'secret',
                                'login_view-current_step': 'auth'})
-        self.assertContains(response, 'Send text message to 123****89')
+        self.assertContains(response, 'Send text message to 001******89')
 
         # Ask for challenge on invalid device
         response = self._post({'auth-username': 'bouke@example.com',
                                'auth-password': 'secret',
                                'challenge_device': 'MALICIOUS/INPUT/666'})
-        self.assertContains(response, 'Send text message to 123****89')
+        self.assertContains(response, 'Send text message to 001******89')
 
         # Ask for SMS challenge
         response = self._post({'auth-username': 'bouke@example.com',
@@ -227,8 +232,8 @@ class LoginTest(UserMixin, TestCase):
     @patch('two_factor.views.core.signals.user_verified.send')
     def test_with_backup_token(self, mock_signal):
         user = self.create_user()
-        user.totpdevice_set.create(name='default', key=random_hex().decode())
-        device = user.staticdevice_set.create(name='backup')
+        TOTPDevice.objects.create(user=user, name='default', key=random_hex().decode())
+        device = StaticDevice.objects.create(user=user, name='backup')
         device.token_set.create(token='abcdef123')
 
         # Backup phones should be listed on the login form
@@ -255,7 +260,7 @@ class LoginTest(UserMixin, TestCase):
         mock_signal.assert_called_with(sender=ANY, request=ANY, user=user, device=device)
 
 
-class SetupTest(UserMixin, TestCase):
+class SetupTest(UserMixin, PERSISTENCE_MODULE.TestCase):
     def setUp(self):
         super(SetupTest, self).setUp()
         self.user = self.create_user()
@@ -300,7 +305,7 @@ class SetupTest(UserMixin, TestCase):
             data={'setup_view-current_step': 'generator',
                   'generator-token': totp(bin_key)})
         self.assertRedirects(response, reverse('two_factor:setup_complete'))
-        self.assertEqual(1, self.user.totpdevice_set.count())
+        self.assertEqual(1, TOTPDevice.objects.filter(user=self.user).count())
 
     def _post(self, data):
         return self.client.post(reverse('two_factor:setup'), data=data)
@@ -345,7 +350,7 @@ class SetupTest(UserMixin, TestCase):
                                     'validation-token': token})
         self.assertRedirects(response, reverse('two_factor:setup_complete'))
 
-        phones = self.user.phonedevice_set.all()
+        phones = PhoneDevice.objects.filter(user=self.user).all()
         self.assertEqual(len(phones), 1)
         self.assertEqual(phones[0].name, 'default')
         self.assertEqual(phones[0].number, '+123456789')
@@ -382,7 +387,7 @@ class SetupTest(UserMixin, TestCase):
                                     'validation-token': token})
         self.assertRedirects(response, reverse('two_factor:setup_complete'))
 
-        phones = self.user.phonedevice_set.all()
+        phones = PhoneDevice.objects.filter(user=self.user).all()
         self.assertEqual(len(phones), 1)
         self.assertEqual(phones[0].name, 'default')
         self.assertEqual(phones[0].number, '+123456789')
@@ -400,7 +405,7 @@ class SetupTest(UserMixin, TestCase):
         automatically mark the session as being OTP verified. Refs #44.
         """
         self.test_setup_generator()
-        device = self.user.totpdevice_set.all()[0]
+        device = TOTPDevice.objects.filter(user=self.user).all()[0]
 
         self.assertEqual(device.persistent_id,
                          self.client.session.get(DEVICE_ID_SESSION_KEY))
@@ -422,7 +427,8 @@ class SetupTest(UserMixin, TestCase):
             self.assertContains(response, 'Add Phone Number')
 
 
-class OTPRequiredMixinTest(UserMixin, TestCase):
+class OTPRequiredMixinTest(UserMixin, PERSISTENCE_MODULE.TestCase):
+
     def test_unauthenticated_redirect(self):
         url = '/secure/'
         response = self.client.get(url)
@@ -472,7 +478,11 @@ class OTPRequiredMixinTest(UserMixin, TestCase):
         self.assertEqual(response.status_code, 200)
 
 
-class AdminPatchTest(TestCase):
+@unittest.skipIf(
+    getattr(settings, 'PERSISTENCE_STRATEGY', None) == 'mongoengine_db',
+    'No admin support for mongodb'
+)
+class AdminPatchTest(PERSISTENCE_MODULE.TestCase):
     def setUp(self):
         patch_admin()
 
@@ -486,7 +496,11 @@ class AdminPatchTest(TestCase):
         self.assertRedirects(response, redirect_to)
 
 
-class AdminSiteTest(UserMixin, TestCase):
+@unittest.skipIf(
+    getattr(settings, 'PERSISTENCE_STRATEGY', None) == 'mongoengine_db',
+    'No admin support for mongodb'
+)
+class AdminSiteTest(UserMixin, PERSISTENCE_MODULE.TestCase):
     def setUp(self):
         super(AdminSiteTest, self).setUp()
         self.user = self.create_superuser()
@@ -509,7 +523,7 @@ class AdminSiteTest(UserMixin, TestCase):
         self.assertEqual(response.status_code, 200)
 
 
-class BackupTokensTest(UserMixin, TestCase):
+class BackupTokensTest(UserMixin, PERSISTENCE_MODULE.TestCase):
     def setUp(self):
         super(BackupTokensTest, self).setUp()
         self.create_user()
@@ -538,10 +552,11 @@ class BackupTokensTest(UserMixin, TestCase):
         response = self.client.get(url)
         second_set = set([token.token for token in
                          response.context_data['device'].token_set.all()])
+        self.assertEqual(10, len(second_set))
         self.assertNotEqual(first_set, second_set)
 
 
-class PhoneSetupTest(UserMixin, TestCase):
+class PhoneSetupTest(UserMixin, PERSISTENCE_MODULE.TestCase):
     def setUp(self):
         super(PhoneSetupTest, self).setUp()
         self.user = self.create_user()
@@ -584,7 +599,7 @@ class PhoneSetupTest(UserMixin, TestCase):
         response = self._post({'phone_setup_view-current_step': 'validation',
                                'validation-token': totp(device.bin_key)})
         self.assertRedirects(response, str(settings.LOGIN_REDIRECT_URL))
-        phones = self.user.phonedevice_set.all()
+        phones = PhoneDevice.objects.filter(user=self.user).all()
         self.assertEqual(len(phones), 1)
         self.assertEqual(phones[0].name, 'backup')
         self.assertEqual(phones[0].number, '+123456789')
@@ -604,12 +619,12 @@ class PhoneSetupTest(UserMixin, TestCase):
             {'number': [six.text_type(phone_number_validator.message)]})
 
 
-class PhoneDeleteTest(UserMixin, TestCase):
+class PhoneDeleteTest(UserMixin, PERSISTENCE_MODULE.TestCase):
     def setUp(self):
         super(PhoneDeleteTest, self).setUp()
         self.user = self.create_user()
-        self.backup = self.user.phonedevice_set.create(name='backup', method='sms')
-        self.default = self.user.phonedevice_set.create(name='default', method='call')
+        self.backup = PhoneDevice.objects.create(user=self.user, name='backup', method='sms')
+        self.default = PhoneDevice.objects.create(user=self.user, name='default', method='call')
         self.login_user()
 
     def test_delete(self):
@@ -624,7 +639,7 @@ class PhoneDeleteTest(UserMixin, TestCase):
         self.assertContains(response, 'was not found', status_code=404)
 
 
-class QRTest(UserMixin, TestCase):
+class QRTest(UserMixin, PERSISTENCE_MODULE.TestCase):
     test_secret = 'This is a test secret for an OTP Token'
     test_img = 'This is a test string that represents a QRCode'
 
@@ -667,7 +682,7 @@ class QRTest(UserMixin, TestCase):
         self.assertEquals(response['Content-Type'], 'image/svg+xml; charset=utf-8')
 
 
-class DisableTest(UserMixin, TestCase):
+class DisableTest(UserMixin, PERSISTENCE_MODULE.TestCase):
     def setUp(self):
         super(DisableTest, self).setUp()
         self.user = self.create_user()
@@ -688,11 +703,26 @@ class DisableTest(UserMixin, TestCase):
         self.assertEqual(list(devices_for_user(self.user)), [])
 
         # cannot disable twice
-        response = self.client.get(reverse('two_factor:disable'))
-        self.assertRedirects(response, str(settings.LOGIN_REDIRECT_URL))
+        url = reverse('two_factor:disable')
+        response = self.client.get(url)
+        redirect_to = '%s?next=%s' % (settings.LOGIN_URL, url)
+        self.assertRedirects(response, redirect_to)
+
+    def test_unverified_need_login(self):
+        second_user = self.create_user(username='second@example.test')
+        self.login_user(user=second_user)
+
+        # OTP was enabled after login, so the user is not verified
+        self.enable_otp(user=second_user)
+
+        url = reverse('two_factor:disable')
+        redirect_to = '%s?next=%s' % (settings.LOGIN_URL, url)
+
+        response = self.client.get(url)
+        self.assertRedirects(response, redirect_to)
 
 
-class TwilioGatewayTest(TestCase):
+class TwilioGatewayTest(PERSISTENCE_MODULE.TestCase):
     def test_call_app(self):
         url = reverse('two_factor:twilio_call_app', args=['123456'])
         response = self.client.get(url)
@@ -772,7 +802,7 @@ class TwilioGatewayTest(TestCase):
                 twilio.make_call(device=Mock(number='+123'), token='654321')
 
 
-class FakeGatewayTest(TestCase):
+class FakeGatewayTest(PERSISTENCE_MODULE.TestCase):
     @patch('two_factor.gateways.fake.logger')
     def test_gateway(self, logger):
         fake = Fake()
@@ -786,7 +816,7 @@ class FakeGatewayTest(TestCase):
             'Fake SMS to %s: "Your token is: %s"', '+123', '654321')
 
 
-class PhoneDeviceTest(UserMixin, TestCase):
+class PhoneDeviceTest(UserMixin, PERSISTENCE_MODULE.TestCase):
     def test_verify(self):
         device = PhoneDevice(key=random_hex().decode())
         self.assertFalse(device.verify_token(-1))
@@ -800,23 +830,23 @@ class PhoneDeviceTest(UserMixin, TestCase):
         self.assertEqual('unknown (bouke@example.com)', str(device))
 
 
-class UtilsTest(UserMixin, TestCase):
+class UtilsTest(UserMixin, PERSISTENCE_MODULE.TestCase):
     def test_default_device(self):
         user = self.create_user()
         self.assertEqual(default_device(user), None)
 
-        user.phonedevice_set.create(name='backup')
+        PhoneDevice.objects.create(user=user, name='backup')
         self.assertEqual(default_device(user), None)
 
-        default = user.phonedevice_set.create(name='default')
+        default = PhoneDevice.objects.create(user=user, name='default')
         self.assertEqual(default_device(user).pk, default.pk)
 
     def test_backup_phones(self):
         self.assertQuerysetEqual(list(backup_phones(None)),
                                  list(PhoneDevice.objects.none()))
         user = self.create_user()
-        user.phonedevice_set.create(name='default')
-        backup = user.phonedevice_set.create(name='backup')
+        PhoneDevice.objects.create(user=user, name='default')
+        backup = PhoneDevice.objects.create(user=user, name='backup')
         phones = backup_phones(user)
 
         self.assertEqual(len(phones), 1)
@@ -860,7 +890,7 @@ class UtilsTest(UserMixin, TestCase):
         self.assertEqual(parse_qs(lhs.query), parse_qs(rhs.query))
 
 
-class ValidatorsTest(TestCase):
+class ValidatorsTest(PERSISTENCE_MODULE.TestCase):
     def test_phone_number_validator_on_form_valid(self):
         class TestForm(forms.Form):
             number = forms.CharField(validators=[phone_number_validator])
@@ -885,7 +915,7 @@ class ValidatorsTest(TestCase):
                          [six.text_type(phone_number_validator.message)])
 
 
-class DisableCommandTest(UserMixin, TestCase):
+class DisableCommandTest(UserMixin, PERSISTENCE_MODULE.TestCase):
     def _assert_raises(self, err_type, err_message):
         if django.VERSION >= (1, 5):
             return self.assertRaisesMessage(err_type, err_message)
@@ -915,7 +945,7 @@ class DisableCommandTest(UserMixin, TestCase):
         self.assertNotEqual(list(devices_for_user(users[2])), [])
 
 
-class StatusCommandTest(UserMixin, TestCase):
+class StatusCommandTest(UserMixin, PERSISTENCE_MODULE.TestCase):
     def _assert_raises(self, err_type, err_message):
         if django.VERSION >= (1, 5):
             return self.assertRaisesMessage(err_type, err_message)
@@ -954,7 +984,7 @@ class StatusCommandTest(UserMixin, TestCase):
 
 
 @unittest.skipUnless(ValidationService, 'No YubiKey support')
-class YubiKeyTest(UserMixin, TestCase):
+class YubiKeyTest(UserMixin, PERSISTENCE_MODULE.TestCase):
     @patch('otp_yubikey.models.RemoteYubikeyDevice.verify_token')
     def test_setup(self, verify_token):
         user = self.create_user()
@@ -1025,7 +1055,7 @@ class YubiKeyTest(UserMixin, TestCase):
         user = self.create_user()
         service = ValidationService.objects.create(name='default', param_sl='', param_timeout='')
         user.remoteyubikeydevice_set.create(service=service, name='default')
-        backup = user.staticdevice_set.create(name='backup')
+        backup = StaticDevice.objects.create(user=user, name='backup')
         backup.token_set.create(token='RANDOM')
 
         response = self.client.post(reverse('two_factor:login'),

@@ -128,7 +128,8 @@ class LoginView(IdempotentSessionWizardView):
                         break
             if step == 'backup':
                 try:
-                    self.device_cache = self.get_user().staticdevice_set.get(name='backup')
+                    user = self.get_user()
+                    self.device_cache = StaticDevice.objects.filter(user=user).get(name='backup')
                 except StaticDevice.DoesNotExist:
                     pass
             if not self.device_cache:
@@ -165,8 +166,8 @@ class LoginView(IdempotentSessionWizardView):
                 phone for phone in backup_phones(self.get_user())
                 if phone != self.get_device()]
             try:
-                context['backup_tokens'] = self.get_user().staticdevice_set\
-                    .get(name='backup').token_set.count()
+                user_static_devices = StaticDevice.objects.filter(user=self.get_user())
+                context['backup_tokens'] = user_static_devices.get(name='backup').token_set.count()
             except StaticDevice.DoesNotExist:
                 context['backup_tokens'] = 0
 
@@ -251,7 +252,7 @@ class SetupView(IdempotentSessionWizardView):
         else:
             raise NotImplementedError("Unknown method '%s'" % self.get_method())
 
-        django_otp.login(self.request, device)
+        django_otp.handlers.login(self.request, device)
         return redirect(self.redirect_url)
 
     def get_form_kwargs(self, step=None):
@@ -351,7 +352,10 @@ class BackupTokensView(FormView):
     number_of_tokens = 10
 
     def get_device(self):
-        return self.request.user.staticdevice_set.get_or_create(name='backup')[0]
+        device, created = StaticDevice.objects.get_or_create(
+            user=self.request.user, name='backup'
+        )
+        return device
 
     def get_context_data(self, **kwargs):
         context = super(BackupTokensView, self).get_context_data(**kwargs)
@@ -442,7 +446,7 @@ class PhoneDeleteView(DeleteView):
     View for removing a phone number used for verification.
     """
     def get_queryset(self):
-        return self.request.user.phonedevice_set.filter(name='backup')
+        return PhoneDevice.objects.filter(user=self.request.user, name='backup')
 
     def get_success_url(self):
         return str(settings.LOGIN_REDIRECT_URL)

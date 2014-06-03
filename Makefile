@@ -10,7 +10,11 @@ example:
 		django-admin.py runserver
 
 test:
-	DJANGO_SETTINGS_MODULE=tests.settings PYTHONPATH=. \
+	pip install --upgrade -r requirements.txt && DJANGO_SETTINGS_MODULE=tests.settings PYTHONPATH=. \
+		django-admin.py test ${TARGET}
+
+test-with-mongo:
+	pip install --upgrade -r requirements.txt && DJANGO_SETTINGS_MODULE=tests.mongo_settings PYTHONPATH=. \
 		django-admin.py test ${TARGET}
 
 coverage:

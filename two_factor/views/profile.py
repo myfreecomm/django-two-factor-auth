@@ -4,7 +4,10 @@ from django.shortcuts import redirect
 from django.views.decorators.cache import never_cache
 from django.views.generic import TemplateView, FormView
 from django_otp import user_has_device, devices_for_user
+from django_otp.plugins.otp_static.models import StaticDevice
+from django_otp.decorators import otp_required
 
+from ..models import get_available_phone_methods
 from ..forms import DisableForm
 from ..utils import default_device, backup_phones
 from .utils import class_view_decorator
@@ -24,7 +27,9 @@ class ProfileView(TemplateView):
 
     def get_context_data(self, **kwargs):
         try:
-            backup_tokens = self.request.user.staticdevice_set.all()[0].token_set.count()
+            backup_tokens = StaticDevice.objects.get(
+                user=self.request.user
+            ).token_set.count()
         except Exception:
             backup_tokens = 0
 
@@ -33,11 +38,12 @@ class ProfileView(TemplateView):
             'default_device_type': default_device(self.request.user).__class__.__name__,
             'backup_phones': backup_phones(self.request.user),
             'backup_tokens': backup_tokens,
+            'available_phone_methods': get_available_phone_methods,
         }
 
 
 @class_view_decorator(never_cache)
-@class_view_decorator(login_required)
+@class_view_decorator(otp_required)
 class DisableView(FormView):
     """
     View for disabling two-factor for a user's account.

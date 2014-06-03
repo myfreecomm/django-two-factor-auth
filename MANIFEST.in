@@ -2,3 +2,5 @@ include *.rst LICENSE
 prune two_factor/locale
 recursive-include two_factor/locale *
 recursive-include two_factor/templates *
+recursive-include two_factor/django_db *
+recursive-include two_factor/mongoengine_db *

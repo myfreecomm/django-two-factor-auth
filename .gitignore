@@ -1,8 +1,16 @@
 *.py[co]
 example/settings_private.py
 *.egg-info
+*.egg
 /.coverage.*
 /.coverage
 /.tox/
 /htmlcov/
 /docs/_build/
+
+/bin/
+/include/
+/lib/
+/local/
+
+*.sw[po]

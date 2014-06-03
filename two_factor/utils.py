@@ -7,6 +7,8 @@ try:
 except ImportError:
     from urllib import quote, urlencode
 
+__all__ = ['default_device', 'backup_phones', 'get_otpauth_url', 'monkeypatch_method']
+
 
 def default_device(user):
     if not user or user.is_anonymous():
@@ -19,7 +21,7 @@ def default_device(user):
 def backup_phones(user):
     if not user or user.is_anonymous():
         return PhoneDevice.objects.none()
-    return user.phonedevice_set.filter(name='backup')
+    return PhoneDevice.objects.filter(user=user, name='backup')
 
 
 def get_otpauth_url(accountname, secret, issuer=None):
