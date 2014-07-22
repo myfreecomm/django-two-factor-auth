@@ -996,13 +996,7 @@ class YubiKeyTest(UserMixin, PERSISTENCE_MODULE.TestCase):
                                     data={'setup_view-current_step': 'welcome'})
         self.assertContains(response, 'YubiKey')
 
-        # Without ValidationService it won't work
-        with self.assertRaisesMessage(KeyError, "No ValidationService found with name 'default'"):
-                self.client.post(reverse('two_factor:setup'),
-                                 data={'setup_view-current_step': 'method',
-                                       'method-method': 'yubikey'})
-
-        # With a ValidationService, should be able to input a YubiKey
+        # The default ValidationService is created automatically if it does not exist
         ValidationService.objects.create(name='default', param_sl='', param_timeout='')
 
         response = self.client.post(reverse('two_factor:setup'),
@@ -1018,7 +1012,7 @@ class YubiKeyTest(UserMixin, PERSISTENCE_MODULE.TestCase):
         self.assertRedirects(response, reverse('two_factor:setup_complete'))
         verify_token.assert_called_with(token)
 
-        yubikeys = user.remoteyubikeydevice_set.all()
+        yubikeys = RemoteYubikeyDevice.objects.filter(user=user).all()
         self.assertEqual(len(yubikeys), 1)
         self.assertEqual(yubikeys[0].name, 'default')
 
@@ -1027,7 +1021,7 @@ class YubiKeyTest(UserMixin, PERSISTENCE_MODULE.TestCase):
         user = self.create_user()
         verify_token.return_value = [True, False]  # only first try is valid
         service = ValidationService.objects.create(name='default', param_sl='', param_timeout='')
-        user.remoteyubikeydevice_set.create(service=service, name='default')
+        RemoteYubikeyDevice.objects.create(user=user, service=service, name='default')
 
         # Input type should be text, not numbers like other tokens
         response = self.client.post(reverse('two_factor:login'),
@@ -1054,7 +1048,7 @@ class YubiKeyTest(UserMixin, PERSISTENCE_MODULE.TestCase):
         """
         user = self.create_user()
         service = ValidationService.objects.create(name='default', param_sl='', param_timeout='')
-        user.remoteyubikeydevice_set.create(service=service, name='default')
+        RemoteYubikeyDevice.objects.create(user=user, service=service, name='default')
         backup = StaticDevice.objects.create(user=user, name='backup')
         backup.token_set.create(token='RANDOM')
 
