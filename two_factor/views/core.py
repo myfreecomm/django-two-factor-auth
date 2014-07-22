@@ -294,9 +294,7 @@ class SetupView(IdempotentSessionWizardView):
             kwargs['public_id'] = self.storage.validated_step_data\
                 .get('yubikey', {}).get('token', '')[:-32]
             try:
-                kwargs['service'] = ValidationService.objects.get(name='default')
-            except ValidationService.DoesNotExist:
-                raise KeyError("No ValidationService found with name 'default'")
+                kwargs['service'] = ValidationService.get_default()
             except ValidationService.MultipleObjectsReturned:
                 raise KeyError("Multiple ValidationService found with name 'default'")
             return RemoteYubikeyDevice(**kwargs)
