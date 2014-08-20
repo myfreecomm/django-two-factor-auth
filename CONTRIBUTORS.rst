@@ -6,11 +6,13 @@ Contributors:
 
 * Agris Ameriks
 * Artur Barseghyan
+* Vitor M. A. da Cruz
 * Edward D'Souza
 * Daniel Hall
 * Christian Hammond
 * Matt Krukowski
 * Daniel Lawrence
+* Jay McEntire
 * Eugene Prikazchikov
 * Chris Templin
 * Julian Wachholz
